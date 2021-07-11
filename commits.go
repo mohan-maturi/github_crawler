@@ -43,8 +43,12 @@ type Commit struct {
 	Branches map[string]int32
 }
 
+
+// Map branch name to commit hash
 var Branches map[string]string
+// Map tag name to commit hash
 var Tags map[string]string
+// Map commit hash to commit object
 var Commits map[string]*Commit
 
 var nextSpan uint32
@@ -68,7 +72,7 @@ func dfs(r *git.Repository, hash plumbing.Hash, chash plumbing.Hash, bName strin
 			Commits[hstr].Children = append(Commits[hstr].Children, cstr)
 		}
 		if len(Commits[hstr].Children) > 1 {
-			fmt.Printf("Found split commit: %s <- %s, %v\n", hash, cstr, commit)
+			fmt.Printf("Commit already exists (split): %s <- %s, %v\n", hash, cstr, commit)
 		} else {
 			fmt.Printf("Commit already exists: %s <- %s, %v\n", hash, cstr, commit)
 		}
@@ -94,6 +98,7 @@ func dfs(r *git.Repository, hash plumbing.Hash, chash plumbing.Hash, bName strin
 		AuthorWhen: c.Author.When,
 		Children:   make([]string, 0),
 		Parents:    make([]string, 0),
+		Tags:		make([]string, 0),
 		Branches:   make(map[string]int32),
 	}
 	// Update the branch. Need to revisit the entire branch logic later
@@ -195,24 +200,38 @@ func bfs(hash string, span uint32, monoclock time.Time) {
 		monoclock = commit.InferredTime
 	}
 
-	fmt.Printf("Populated commit %v\n", commit)
+	fmt.Printf("%s: Populated commit %v\n", hash, commit)
 
 	numChildren := len(commit.Children)
 	if numChildren == 0 {
 		// Reached the last commit, nothing more to traverse
-		fmt.Printf("Reached the end commit %s with %v\n", hash, commit)
+		fmt.Printf("%s: Reached the end commit with %v\n", hash, commit)
 		return
 	}
 
 	for _, chash := range commit.Children {
 		cc := Commits[chash]
+		// skip the child commit if it has already by visited from a prior root
+		if cc.Span != SPAN_NOT_SET {
+			fmt.Printf("%s: Child commit is already visited, skipping %v\n", chash, cc)
+			continue
+		}
+
 		if len(cc.Parents) == 1 {
-			// The child commit has only one parent, that is this commit.
-			// Continue traversing with the parent span and monoclock
-			bfs(chash, span, monoclock)
+			// If this commit is a split commit, i.e has more than one child commit, then
+			// increment the span for the child commit
+			ccspan := span
+			if numChildren > 1 {
+				nextSpan++; ccspan = nextSpan
+				commit.ChildSpan = append(commit.ChildSpan, ccspan)
+				fmt.Printf("%s: Updated commit %v\n", hash, commit)
+				cc.ParentSpan = append(cc.ParentSpan, span)
+			}
+			// Continue traversing the child commit as it has only one parent
+			bfs(chash, ccspan, monoclock)
 		}
 		if len(cc.Parents) > 1 {
-			fmt.Printf("Child commit %s is a merge commit with parents %v\n", chash, cc.Parents)
+			fmt.Printf("%s: Child commit is a merge commit with parents %v\n", chash, cc.Parents)
 			// The child happens to be a merge commit, the child will have multiple parent commits
 			// Traverse only those child commit(s) that have all their parents visited
 			// Visited can be verified by looking into the span or the inferred time.
@@ -223,7 +242,7 @@ func bfs(hash string, span uint32, monoclock time.Time) {
 				}
 			}
 			if len(parentsNotVisited) > 0 {
-				fmt.Printf("Skipping merge commit %c becuase parents %v not traversed\n", chash, parentsNotVisited)
+				fmt.Printf("%s: Skipping merge commit becuase parents %v not traversed\n", chash, parentsNotVisited)
 				continue
 			}
 
@@ -231,11 +250,11 @@ func bfs(hash string, span uint32, monoclock time.Time) {
 
 			// compute spans below...
 			// Start with a new span
-			ccspan := nextSpan
-			nextSpan++
+			nextSpan++; ccspan := nextSpan
 			// Set the child spans for the parents and parent spans for this commit
 			for _, ccphash := range cc.Parents {
 				Commits[ccphash].ChildSpan = append(Commits[ccphash].ChildSpan, ccspan)
+				fmt.Printf("%s: Updated commit %v\n", ccphash, Commits[ccphash])
 				cc.ParentSpan = append(cc.ParentSpan, Commits[ccphash].Span)
 			}
 
@@ -248,8 +267,7 @@ func bfs(hash string, span uint32, monoclock time.Time) {
 				}
 			}
 
-			fmt.Printf("Traversing merge commit %s with span %d and reference clock %v\n",
-				chash, ccspan, ccmonoclock)
+			fmt.Printf("%s: Traversing merge commit with span %d and reference clock %v\n", chash, ccspan, ccmonoclock)
 			bfs(chash, ccspan, ccmonoclock)
 		}
 	}
@@ -281,20 +299,24 @@ func IterBranchesForCommits(repo *git.Repository) {
 
 	// Set all initial commits
 	for c, b := range roots {
-		Commits[b].InitialCommit = true
+		Commits[c].InitialCommit = true
 		fmt.Printf("%s: Root of the repo is %s in %s\n", time.Now().String(), c, b)
 	}
 
 	// Mark all Tags
-	for t, c := range Tags {
-		Commits[c].Tags = append(Commits[c].Tags, t)
-		fmt.Printf("Tag %s: %s\n", t, c)
+	for t, hstr := range Tags {
+		if commit, ok := Commits[hstr]; ok {
+			commit.Tags = append(commit.Tags, t)
+			fmt.Printf("%s: Tag %s\n", hstr, t)
+		} else {
+			fmt.Printf("%s: Not found commit, Tag %s\n", hstr, t)	
+		}
 	}
 
 	// Mark all branch heads
-	for b, c := range Branches {
-		Commits[c].BranchHeads = append(Commits[c].Tags, b)
-		fmt.Printf("Tag %s: %s\n", b, c)
+	for b, hstr := range Branches {
+		Commits[hstr].BranchHeads = append(Commits[hstr].Tags, b)
+		fmt.Printf("%s: Branch %s\n", hstr, b)
 	}
 
 	// Traverse the commits from the root and set spans and inferred time for each commit
@@ -331,5 +353,5 @@ func main() {
 	repo := CheckoutBranches(path)
 	IterBranchesForCommits(repo)
 
-	<-make(chan int)
+	//<-make(chan int)
 }
