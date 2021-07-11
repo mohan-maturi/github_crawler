@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"runtime"
 	"strings"
 	"time"
 
@@ -12,10 +11,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 )
 
-const NIL_COMMIT string = "0000000000000000000000000000000000000000"
-const SPAN_NOT_SET uint32 = 0
-const START_SPAN uint32 = 1
-
+// Commit within a repo
 type Commit struct {
 	Hash         string
 	InferredTime time.Time
@@ -42,16 +38,6 @@ type Commit struct {
 	// TDOD: To be deprecated
 	Branches map[string]int32
 }
-
-
-// Map branch name to commit hash
-var Branches map[string]string
-// Map tag name to commit hash
-var Tags map[string]string
-// Map commit hash to commit object
-var Commits map[string]*Commit
-
-var nextSpan uint32
 
 func init() {
 	Commits = make(map[string]*Commit)
@@ -131,62 +117,6 @@ func dfs(r *git.Repository, hash plumbing.Hash, chash plumbing.Hash, bName strin
 	return root
 }
 
-func CheckoutBranches(path string) *git.Repository {
-	fmt.Printf("%s: CheckoutBranches invoked\n", time.Now().String())
-	// We instantiate a new repository targeting the given path (the .git folder)
-	r, err := git.PlainOpen(path)
-	CheckIfError(err)
-
-	remotes, err := r.Remotes()
-	CheckIfError(err)
-	remote := remotes[0]
-	fmt.Printf("%s: Fetching remotes for %s\n", time.Now().String(), remote)
-	r.Fetch(&git.FetchOptions{})
-
-	// Get the branches and tags
-	refBranchPrefix := "refs/heads/"
-	refTagPrefix := "refs/tags/"
-	refList, err := remote.List(&git.ListOptions{})
-	CheckIfError(err)
-	for _, ref := range refList {
-		refName := ref.Name().String()
-		hash := ref.Hash().String()
-
-		if strings.HasPrefix(refName, refBranchPrefix) {
-			branchName := refName[len(refBranchPrefix):]
-			Branches[branchName] = hash
-		} else {
-			if strings.HasPrefix(refName, refTagPrefix) {
-				tagName := refName[len(refTagPrefix):]
-				Tags[tagName] = hash
-			}
-		}
-	}
-
-	// Log all the branches
-	for b, c := range Branches {
-		fmt.Printf("Branch %s: %s\n", b, c)
-	}
-
-	// Get the worktree to check out branches locally
-	worktree, err := r.Worktree()
-	CheckIfError(err)
-	fmt.Println("Worktree: ", worktree)
-
-	// checkout branches locally
-	fmt.Printf("%s: Checking out Branches locally \n", time.Now().String())
-	for k, v := range Branches {
-		fmt.Printf("%s: %s\n", time.Now().String(), PrintMemUsage())
-		fmt.Printf("%s: Checking out... %s at %s\n", time.Now().String(), k, v)
-		worktree.Checkout(&git.CheckoutOptions{
-			Hash:   plumbing.NewHash(v),
-			Branch: plumbing.NewBranchReferenceName(k),
-			Create: true,
-		})
-	}
-
-	return r
-}
 
 func bfs(hash string, span uint32, monoclock time.Time) {
 	commit := Commits[hash]
@@ -271,87 +201,4 @@ func bfs(hash string, span uint32, monoclock time.Time) {
 			bfs(chash, ccspan, ccmonoclock)
 		}
 	}
-}
-
-func IterBranchesForCommits(repo *git.Repository) {
-	fmt.Printf("%s: IterBranchesForCommits invoked\n", time.Now().String())
-	bIter, err := repo.Branches()
-	CheckIfError(err)
-	// There can be more than one root (initial commit) for a repo.
-	roots := make(map[string]string)
-	CheckIfError(bIter.ForEach(func(ref *plumbing.Reference) error {
-		bName := ref.Name().String()
-		bType := ref.Type()
-		fmt.Printf("%s: %s\n", time.Now().String(), PrintMemUsage())
-		fmt.Printf("%s: Iterating Branch: %s, %s, %s\n", time.Now().String(), bName, bType, ref.Hash().String())
-
-		// Since this is the tip of the branch and git commit does not have a pointer
-		// to the children, we set the child commit to empty string.
-		rets := dfs(repo, ref.Hash(), plumbing.NewHash(""), bName)
-		for _, r := range rets {
-			roots[r] = bName
-			fmt.Printf("Found root %s traversing branch %s\n", r, bName)
-		}
-		return nil
-	}))
-
-	fmt.Printf("%s: %s\n", time.Now().String(), PrintMemUsage())
-
-	// Set all initial commits
-	for c, b := range roots {
-		Commits[c].InitialCommit = true
-		fmt.Printf("%s: Root of the repo is %s in %s\n", time.Now().String(), c, b)
-	}
-
-	// Mark all Tags
-	for t, hstr := range Tags {
-		if commit, ok := Commits[hstr]; ok {
-			commit.Tags = append(commit.Tags, t)
-			fmt.Printf("%s: Tag %s\n", hstr, t)
-		} else {
-			fmt.Printf("%s: Not found commit, Tag %s\n", hstr, t)	
-		}
-	}
-
-	// Mark all branch heads
-	for b, hstr := range Branches {
-		Commits[hstr].BranchHeads = append(Commits[hstr].Tags, b)
-		fmt.Printf("%s: Branch %s\n", hstr, b)
-	}
-
-	// Traverse the commits from the root and set spans and inferred time for each commit
-	for hash, _ := range roots {
-		// Each root stats with a new span
-		nextSpan++
-
-		// Initialize span and moncolock for this root
-		span := nextSpan
-		monoclock := Commits[hash].CommitWhen
-		bfs(hash, span, monoclock)
-	}
-
-}
-
-func bToMb(b uint64) uint64 {
-	return b / 1024 / 1024
-}
-
-func PrintMemUsage() string {
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
-
-	// For info on each, see: https://golang.org/pkg/runtime/#MemStats
-	return fmt.Sprintf("Alloc = %v MiB\tTotalAlloc = %v MiB\tSys = %v MiB\tNumGC = %v",
-		bToMb(m.Alloc), bToMb(m.TotalAlloc), bToMb(m.Sys), m.NumGC)
-}
-
-func main() {
-	fmt.Printf("%s: Start processing\n", time.Now().String())
-	CheckArgs("<path>")
-	path := os.Args[1]
-
-	repo := CheckoutBranches(path)
-	IterBranchesForCommits(repo)
-
-	//<-make(chan int)
 }
