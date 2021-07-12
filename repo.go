@@ -55,7 +55,7 @@ func (repo Repo) PrintTags() {
 	}
 }
 
-func (repo Repo) Open() {
+func (repo *Repo) Open() {
 	var err error
 	fmt.Printf("%s: %s: Open local repo clone path\n", time.Now().String(), repo.Path)
 	// We instantiate a new repository targeting the given path (the .git folder)
@@ -71,19 +71,20 @@ func (repo Repo) Open() {
 	// Get the worktree to check out branches locally
 	repo.GitWorktree, err = repo.GitRepo.Worktree()
 	CheckIfError(err)
-	fmt.Printf("%s: Worktree: %v\n", repo.Path, repo.GitWorktree)
+	fmt.Printf("%s: %s: Worktree: %v\n", time.Now().String(), repo.Path, repo.GitWorktree)
 
 	// Set repo name from the Remote Fetch URL
 	// TODO: Strip everything other than the repo name later
-	repo.Name = remote.Config().URLs[0]
-	repo.Commits = make(map[string]*Commit)
+	repo.Name = strings.Split(strings.Split(remote.Config().URLs[0], "/")[1], ".")[0]
+
 	repo.Branches = make(map[string]string)
 	repo.Tags = make(map[string]string)
 	repo.Roots = make(map[string]string)
+	repo.Commits = make(map[string]*Commit)
 	repo.nextSpan = SPAN_NOT_SET
 
 	// List the remote branches and tags
-	repo.Printf("%s: Listing Remote branches and tags for %v\n", time.Now().String(), remote)
+	fmt.Printf("%s: Listing Remote branches and tags for %v\n", time.Now().String(), remote)
 	refList, err := remote.List(&git.ListOptions{})
 	CheckIfError(err)
 	for _, ref := range refList {
@@ -101,7 +102,7 @@ func (repo Repo) Open() {
 	}
 }
 
-func (repo Repo) CheckoutBranches() {
+func (repo *Repo) CheckoutBranches() {
 	// checkout branches locally
 	repo.Printf("%s: Checking out Branches locally \n", time.Now().String())
 	for k, v := range repo.Branches {
@@ -116,7 +117,7 @@ func (repo Repo) CheckoutBranches() {
 }
 
 // Return the first commit, the root of the tree
-func (repo Repo) dfsCommitsFromTip(bName string, hash plumbing.Hash, chash plumbing.Hash) []string {
+func (repo *Repo) dfsCommitsFromTip(bName string, hash plumbing.Hash, chash plumbing.Hash) []string {
 	hstr := hash.String()
 	cstr := chash.String()
 
@@ -187,7 +188,7 @@ func (repo Repo) dfsCommitsFromTip(bName string, hash plumbing.Hash, chash plumb
 	return root
 }
 
-func (repo Repo) ReadCommits() {
+func (repo *Repo) ReadCommits() {
 	repo.Printf("%s: Populate commits by iterating branches\n", time.Now().String())
 	bIter, err := repo.GitRepo.Branches()
 	CheckIfError(err)
@@ -231,7 +232,7 @@ func (repo Repo) ReadCommits() {
 	}
 }
 
-func (repo Repo) dfsCommitsFromRoot(hash string, span uint32, monoclock time.Time) {
+func (repo *Repo) dfsCommitsFromRoot(hash string, span uint32, monoclock time.Time) {
 	commit := repo.Commits[hash]
 	commit.Span = span
 	if commit.CommitWhen.Before(monoclock) {
@@ -318,7 +319,7 @@ func (repo Repo) dfsCommitsFromRoot(hash string, span uint32, monoclock time.Tim
 	}
 }
 
-func (repo Repo) PopulateExtraCommitFields() {
+func (repo *Repo) PopulateExtraCommitFields() {
 	// Traverse the commits from the root and set spans and inferred time for each commit
 	for hash, _ := range repo.Roots {
 		// Each root stats with a new span
